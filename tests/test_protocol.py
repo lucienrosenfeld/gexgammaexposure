@@ -98,6 +98,39 @@ def test_no_ordinary_price_stop():
     assert proto.check(m, pnl_dollars=-500.0) is None  # inside L_cat: hold
 
 
+def test_threshold_flat_is_admissible():
+    """When every theta has negative expected value, the selection is flat."""
+    from espa.trade.threshold import select_threshold
+
+    rng = np.random.default_rng(9)
+    n = 300
+    idx = pd.RangeIndex(n)
+    fz = pd.Series(np.abs(rng.normal(1.5, 1.0, n)), index=idx)
+    direction = pd.Series(np.sign(rng.normal(0, 1, n)), index=idx)
+    # both sides lose after costs on average: a pure cost-drag world
+    targets = pd.DataFrame(
+        {
+            "y_long": rng.normal(-0.3, 1.0, n),
+            "y_short": rng.normal(-0.3, 1.0, n),
+        },
+        index=idx,
+    )
+    res = select_threshold(fz, direction, targets)
+    assert res.flat
+    assert np.isinf(res.z_theta)
+    assert res.trade_fraction == 0.0
+    # and a genuinely profitable world still selects a finite threshold
+    targets_good = pd.DataFrame(
+        {
+            "y_long": np.where(direction > 0, 0.5, -0.5) + rng.normal(0, 0.3, n),
+            "y_short": np.where(direction < 0, 0.5, -0.5) + rng.normal(0, 0.3, n),
+        },
+        index=idx,
+    )
+    res2 = select_threshold(fz, direction, targets_good)
+    assert not res2.flat
+
+
 def test_position_mapping():
     assert position_fraction(0.5, theta=1.0) == 0.0  # dead zone
     assert position_fraction(1.5, theta=1.0) == pytest.approx(0.5)

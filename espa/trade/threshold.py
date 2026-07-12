@@ -36,11 +36,28 @@ def _sharpe(pnl: pd.Series) -> float:
 
 @dataclass
 class ThresholdResult:
+    """Outcome of threshold selection for one refit block.
+
+    ``z_theta`` is +inf when flat is the selected action: the feasibility
+    band constrains *how much* the strategy trades when it trades, but
+    flat is always admissible — if the maximum over theta of the
+    penalised out-of-sample objective is not positive, no theta has
+    positive expected value and the strategy trades zero days in that
+    block. Without this, the optimiser is forced to pick a cost-paying
+    threshold inside the band even when every candidate loses money,
+    which is exactly what a slow decay from edge to null would exploit
+    in production before the kill switches caught it.
+    """
+
     z_theta: float
     objective: float
     sharpe: float
     trade_fraction: float
     grid: pd.DataFrame
+
+    @property
+    def flat(self) -> bool:
+        return not np.isfinite(self.z_theta) or np.isinf(self.z_theta)
 
 
 def select_threshold(
@@ -97,6 +114,10 @@ def select_threshold(
         # caller must treat this as 'no validated threshold', not trade
         return ThresholdResult(np.nan, -np.inf, np.nan, 0.0, df)
     best = df.loc[df["objective"].idxmax()]
+    if best["objective"] <= 0:
+        # flat is admissible: every feasible theta has non-positive
+        # penalised expected value, so the selected action is not to trade
+        return ThresholdResult(np.inf, float(best["objective"]), np.nan, 0.0, df)
     return ThresholdResult(
         z_theta=float(best["z_theta"]),
         objective=float(best["objective"]),

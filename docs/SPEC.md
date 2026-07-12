@@ -254,6 +254,8 @@ trade iff |ŷ_t| / σ̂_{ŷ,t} > z_θ
 
 with σ̂_{ŷ,t} propagated from the fold-level dispersion of coefficient estimates through x_t. This prevents identical raw predictions from being treated equally when model uncertainty differs across refits.
 
+**Amendment (post-specification, recorded 2026-07): flat is admissible.** If max_θ of the penalised out-of-sample objective is not positive, the strategy trades zero days in that refit block. The feasibility band constrains how much the strategy trades *when it trades*; it must not force the optimiser to select a cost-paying threshold in a regime where every θ has negative expected value. The defect this repairs was found in synthetic-null testing: the band-constrained optimiser generated more trades in a null world than in edge worlds, and in production a slow decay from edge to null would reproduce that behaviour before the kill switches caught it.
+
 ## 17. Position mapping and size
 
 p_t = sign(ŷ_t) · min(1, (|ŷ_t| − θ)/θ) beyond the threshold, zero inside it

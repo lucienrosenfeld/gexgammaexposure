@@ -64,11 +64,27 @@ def path_gamma_integral(
     s = intraday_spots.to_numpy(dtype=float)
     if s.size < 2:
         return np.nan
-    pgi = 0.0
-    for k in range(1, s.size):
-        g = blended_0dte_gamma(contracts_0dte, s[k - 1], rho, lambda_s, lambda_t)
-        pgi -= g * (s[k] - s[k - 1]) / s[k - 1]
-    return float(pgi)
+    # Vectorised equivalent of summing blended_0dte_gamma(s[k-1]) * ret_k
+    # over bars: the surface is re-marked at each bar's opening spot
+    # through the S^2 term and the proximity kernel; per-contract gamma,
+    # OI and volume are the day's fixed inputs.
+    strikes = np.array([c.strike for c in contracts_0dte], dtype=float)
+    gammas = np.array([c.gamma for c in contracts_0dte], dtype=float)
+    mults = np.array([c.multiplier for c in contracts_0dte], dtype=float)
+    tdecay = np.exp(
+        -np.array([c.expiry_years for c in contracts_0dte], dtype=float) / lambda_t
+    )
+    size = np.array([c.open_interest for c in contracts_0dte], dtype=float)
+    if rho > 0.0:
+        size = size + rho * np.array(
+            [max(c.same_day_volume, 0.0) for c in contracts_0dte], dtype=float
+        )
+    s0 = s[:-1]  # bar-opening spots, shape (n_bars,)
+    kernel = np.exp(-np.abs(strikes[None, :] - s0[:, None]) / (lambda_s * s0[:, None]))
+    gtilde = (gammas * size * mults * tdecay)[None, :] * (s0**2)[:, None] * 0.01 * kernel
+    g_per_bar = gtilde.sum(axis=1)
+    rets = (s[1:] - s0) / s0
+    return float(-(g_per_bar * rets).sum())
 
 
 @dataclass(frozen=True)

@@ -41,6 +41,7 @@ exists so the machinery itself is verifiable today.
 | Appendix B constants | `espa/config.py` |
 | orchestration + event-day logging | `espa/backtest/engine.py` |
 | synthetic DGP for framework verification | `espa/backtest/synthetic.py` |
+| Monte Carlo error-rate calibration (Type I/II, λ, recovery) | `espa/backtest/montecarlo.py` |
 
 ## Quickstart
 
@@ -48,6 +49,7 @@ exists so the machinery itself is verifiable today.
 pip install -e ".[dev]"
 pytest                                  # framework verification suite
 python scripts/run_synthetic_backtest.py --days 750 --edge 0.5
+python scripts/run_monte_carlo.py --reps 200   # Type I/II calibration (~15 min on 4 cores)
 ```
 
 The demo plants a known edge in synthetic data and runs the full protocol:

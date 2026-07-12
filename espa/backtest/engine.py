@@ -249,8 +249,10 @@ def _apply_threshold_sequentially(
             penalty=config.threshold_penalty,
             constants=constants,
         )
-        if not np.isfinite(res.z_theta):
-            continue
+        if np.isnan(res.z_theta):
+            continue  # no valid selection possible (e.g. no feasible theta)
+        # z_theta = +inf is a real selection: flat is admissible, and the
+        # comparison below then trades nothing for the block.
         daily.loc[block, "z_theta"] = res.z_theta
         traded = daily.loc[block, "forecast_z"] > res.z_theta
         daily.loc[block, "direction"] = np.sign(daily.loc[block, "y_hat"]).where(traded, 0.0)
