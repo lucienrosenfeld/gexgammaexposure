@@ -94,14 +94,21 @@ At the effect sizes actually believed in (per-trade Sharpe ≈ 0.2–0.3),
 acceptance at t > 3 with ~650 OOS days has power ≈ 0.3–0.4. Extended
 samples (100 replications per cell):
 
-| world | days (≈OOS) | accept rate | mean t-stat |
-|---|---|---|---|
-| stage1-med | 1,000 (~650) | 0.315 | 2.48 |
-| stage1-med | 1,500 (~1,100) | *see mc_power run* | |
-| stage1-med | 2,000 (~1,600) | *see mc_power run* | |
-| options-small | 1,000 (~650) | 0.425 | 2.76 |
-| options-small | 1,500 (~1,100) | *see mc_power run* | |
-| options-small | 2,000 (~1,600) | *see mc_power run* | |
+| world | days (≈OOS) | accept rate | mean t-stat | λ median | β₂ sign-recovery |
+|---|---|---|---|---|---|
+| stage1-med | 1,000 (~650) | 0.315 | 2.48 | 0.059 | 0.54 |
+| stage1-med | 1,500 (~1,100) | 0.72 | 3.56 | 0.046 | 0.49 |
+| stage1-med | 2,000 (~1,600) | 0.97 | 4.56 | 0.048 | 0.51 |
+| options-small | 1,000 (~650) | 0.425 | 2.76 | 0.264 | 1.00 |
+| options-small | 1,500 (~1,100) | 0.76 | 3.82 | 0.272 | 1.00 |
+| options-small | 2,000 (~1,600) | 0.95 | 4.69 | 0.284 | 1.00 |
+
+Acceptance power crosses 50% between 1,000 and 1,500 days and reaches
+~95% by 2,000 days at these effect sizes. Per-trade Sharpe estimates are
+stable across sample sizes (≈0.29 / ≈0.32), so the power gain is pure
+accumulation, as it should be. The λ noise floor and β₂ recovery are
+already at their asymptotic behaviour by 1,000 days: sample size buys
+certification, not detection — detection saturates first.
 
 ## Bottom line
 
@@ -110,6 +117,16 @@ diagnostics are far more sensitive than its acceptance test, which is
 the intended asymmetry: research information accrues (β₂, λ, sign
 stability) years before deployment certification does. The cost of the
 t > 3 hurdle is real and now quantified: at believable effect sizes,
-roughly two-thirds of true edges will not certify on ~650 OOS days.
-That is the price of a near-zero false-positive rate under 17 registered
-trials, and the remedy is accumulation, never looser criteria.
+roughly two-thirds of true edges will not certify on ~650 OOS days,
+rising to ~75% power at ~1,100 OOS days and ~95% at ~1,600. That is the
+price of a near-zero false-positive rate under 17 registered trials, and
+the remedy is accumulation, never looser criteria.
+
+Mapped onto the real programme's calendar: the options-era sample grows
+by ~250 ordinary days per year from the May 2022 split, so if the true
+effect sizes are in this range, coefficient-level evidence (β₂ sign, λ
+above the noise floor) is measurable in the first research pass, while
+P&L-level certification realistically needs a combined
+historical-plus-live sample reaching into the late 2020s — which is what
+the spec's honest prior (Section 26) predicted qualitatively and this
+calibration now prices quantitatively.
