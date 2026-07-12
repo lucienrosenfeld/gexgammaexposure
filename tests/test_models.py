@@ -87,6 +87,40 @@ def test_utility_gate_forces_lambda_to_zero():
     assert b.current_lambda() == 0.0
 
 
+def test_blender_warmup_prevents_day_one_full_weight():
+    b = LiveBlender()
+    rng = np.random.default_rng(60)
+    for i in range(b.min_updates + 5):
+        y = rng.normal(0, 1)
+        q = y + rng.normal(0, 1.0)
+        o = (y - q) * 0.9
+        if i < b.min_updates:
+            # one lucky comparison must not grant weight during warmup
+            assert b.current_lambda() == 0.0
+        b.update(y, q, o, incremental_pnl=0.1)
+    assert b.current_lambda() > 0.0
+
+
+def test_utility_gate_reopens_when_window_rolls():
+    """The gate must not latch shut forever once forced to zero."""
+    b = LiveBlender()
+    rng = np.random.default_rng(61)
+    win = b.constants.utility_gate_window
+    # phase 1: block loses money -> gate shuts
+    for _ in range(win):
+        y = rng.normal(0, 1)
+        q = y + rng.normal(0, 1.0)
+        b.update(y, q, (y - q) * 0.9, incremental_pnl=-0.1)
+    assert b.current_lambda() == 0.0
+    # phase 2: counterfactual contribution turns positive; once the
+    # trailing window rolls over, the gate reopens
+    for _ in range(win + 1):
+        y = rng.normal(0, 1)
+        q = y + rng.normal(0, 1.0)
+        b.update(y, q, (y - q) * 0.9, incremental_pnl=0.1)
+    assert b.current_lambda() > 0.0
+
+
 def test_stacking_stage2_sees_only_oof_stage1():
     """Stage 2 fitted against OOF predictions, not in-sample fits.
 

@@ -57,7 +57,19 @@ def select_threshold(
     ``targets``: executable target frame (y_long / y_short).
     """
     if grid is None:
-        grid = np.arange(0.0, 3.01, 0.1)
+        # Candidate thresholds come from the empirical quantiles of the
+        # forecast-z history, so the feasibility band always contains
+        # candidates regardless of the level of forecast_z. The level is
+        # not stationary across refits: as the expanding window grows,
+        # coefficient dispersion shrinks and forecast_z inflates, and a
+        # fixed numeric grid silently strands the strategy outside the
+        # band (never trading) or inside it (always trading).
+        clean = forecast_z.dropna()
+        if len(clean) >= 20:
+            qs = np.quantile(clean, np.linspace(0.30, 0.98, 35))
+            grid = np.unique(np.concatenate([[0.0], qs]))
+        else:
+            grid = np.arange(0.0, 3.01, 0.1)
     lo, hi = constants.trade_frequency_band
     n = int(forecast_z.notna().sum())
     rows = []

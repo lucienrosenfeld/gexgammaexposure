@@ -33,8 +33,13 @@ from espa.config import DEFAULT_CONSTANTS, SpecConstants
 @dataclass
 class LiveBlender:
     constants: SpecConstants = DEFAULT_CONSTANTS
+    #: Minimum realised joint (Q, O) observations before lambda may leave
+    #: zero. A single lucky squared-error comparison must not hand the
+    #: options block full weight on day one.
+    min_updates: int = 20
     _loss_q: float | None = field(default=None, repr=False)
     _loss_full: float | None = field(default=None, repr=False)
+    _n_joint_updates: int = field(default=0, repr=False)
     _incremental_pnl: deque = field(default_factory=deque, repr=False)
 
     def __post_init__(self) -> None:
@@ -48,6 +53,8 @@ class LiveBlender:
         """lambda_t from information through the last update only."""
         if self._loss_q is None or self._loss_full is None or self._loss_q <= 0:
             return 0.0  # options block earns its weight; it does not start with it
+        if self._n_joint_updates < self.min_updates:
+            return 0.0
         if len(self._incremental_pnl) > 0 and sum(self._incremental_pnl) < 0:
             return 0.0  # utility gate
         raw = (self._loss_q - self._loss_full) / (self.constants.blend_delta * self._loss_q)
@@ -67,10 +74,15 @@ class LiveBlender:
     ) -> None:
         """Record one day's realised outcome after the window closes.
 
-        ``incremental_pnl``: net executable P&L of the blended strategy
-        minus the Stage-1-only strategy for this trade, if a trade
-        occurred; None on flat days (flat days do not consume a slot in
-        the trailing-60-trade gate).
+        ``incremental_pnl``: the options block's *counterfactual*
+        full-weight contribution for this trade — executable P&L of
+        trading sign(Q+O) minus that of trading sign(Q) — with 0.0 when
+        the two directions agree. It must be counterfactual, not the
+        realised blend: if it were measured only when the live blend
+        actually diverged, forcing lambda to zero would freeze the
+        trailing window and the gate could never reopen. None on flat
+        days (flat days do not consume a slot in the trailing-60-trade
+        gate).
         """
         if not (np.isfinite(y_realised) and np.isfinite(q_hat)):
             return
@@ -82,5 +94,6 @@ class LiveBlender:
             self._loss_full = (
                 lf if self._loss_full is None else (1 - a) * self._loss_full + a * lf
             )
+            self._n_joint_updates += 1
         if incremental_pnl is not None and np.isfinite(incremental_pnl):
             self._incremental_pnl.append(incremental_pnl)

@@ -164,7 +164,7 @@ def run_backtest(
                 if not is_event and np.isfinite(q):
                     y_real = data.y_mid.get(day, np.nan)
                     if np.isfinite(y_real):
-                        inc = _incremental_pnl(day, y_hat, q, data.targets)
+                        inc = _incremental_pnl(day, o, q, data.targets)
                         blender.update(float(y_real), q, o, incremental_pnl=inc)
 
     daily = pd.DataFrame(rows).set_index("day").sort_index()
@@ -197,16 +197,20 @@ def run_backtest(
     )
 
 
-def _incremental_pnl(day, y_hat: float, q_hat: float, targets: pd.DataFrame) -> float | None:
+def _incremental_pnl(day, o_hat: float, q_hat: float, targets: pd.DataFrame) -> float | None:
     """Options-block incremental executable P&L for the utility gate.
 
-    Counted only when the blended and Stage-1-only directions differ —
-    when they agree the block changed nothing tradable that day.
+    Measured counterfactually at full options weight — sign(Q+O) versus
+    sign(Q) — regardless of the live lambda, so the trailing window keeps
+    rolling while the gate is shut and can reopen when the block starts
+    helping again. Days where the two directions agree contribute 0.0.
     """
-    d_full = np.sign(y_hat) if np.isfinite(y_hat) else 0.0
-    d_q = np.sign(q_hat) if np.isfinite(q_hat) else 0.0
-    if d_full == d_q:
+    if not (np.isfinite(o_hat) and np.isfinite(q_hat)):
         return None
+    d_full = float(np.sign(q_hat + o_hat))
+    d_q = float(np.sign(q_hat))
+    if d_full == d_q:
+        return 0.0
     row = targets.loc[[day]]
     pnl_full = float(executable_pnl(pd.Series([d_full], index=[day]), row).iloc[0])
     pnl_q = float(executable_pnl(pd.Series([d_q], index=[day]), row).iloc[0])

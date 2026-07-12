@@ -69,6 +69,27 @@ def stage2_features(
     )
 
 
+def robust_scales(features: pd.DataFrame) -> pd.Series:
+    """Per-feature robust scale (1.4826 * MAD), computed on training data.
+
+    Stage 2 features live on wildly different natural scales — the raw
+    path-gamma statistic carries Gamma * OI * S^2 units while the
+    interaction and pinning terms are O(1) — and a single ridge penalty
+    across unscaled features silently deletes whichever feature has the
+    largest units. Scales are fitted on the training window only and
+    frozen into the :class:`StackedFit` (Section 8's lagged-history rule
+    at the fold level).
+    """
+    scales = {}
+    for c in features.columns:
+        x = features[c].dropna()
+        s = 1.4826 * float((x - x.median()).abs().median()) if len(x) else 0.0
+        if s <= 0:
+            s = float(x.std()) if len(x) > 1 else 0.0
+        scales[c] = s if s > 0 else 1.0
+    return pd.Series(scales)
+
+
 @dataclass
 class StackedFit:
     """One training window's frozen artefacts, applied forward unchanged."""
@@ -76,6 +97,7 @@ class StackedFit:
     stage1: Stage1Model
     stage2: Stage2Model
     pgi_residualiser: PGIResidualiser
+    stage2_scales: pd.Series
 
     def forecast(
         self,
@@ -90,7 +112,7 @@ class StackedFit:
         """Validation-period Qhat and Ohat; blending happens downstream."""
         q_hat = self.stage1.predict(stage1_features)
         pgi_perp = self.pgi_residualiser.transform(pgi_raw, c_early, c_late, r_day)
-        feats = stage2_features(a_density, q_hat, pgi_perp, pinning)
+        feats = stage2_features(a_density, q_hat, pgi_perp, pinning) / self.stage2_scales
         o_hat = self.stage2.predict(feats)
         return pd.DataFrame({"Q_hat": q_hat, "O_hat": o_hat})
 
@@ -121,8 +143,11 @@ def fit_stage2_stacked(
     resid = residualise_pgi(pgi_raw, c_early, c_late, r_day)
     pgi_perp = resid.transform(pgi_raw, c_early, c_late, r_day)
 
-    # 3. Stage 2 fitted against OOF predictions on Stage 1 residuals.
+    # 3. Stage 2 fitted against OOF predictions on Stage 1 residuals,
+    #    on features standardised by training-window robust scales.
     feats2 = stage2_features(a_density, q_oof, pgi_perp, pinning)
+    scales = robust_scales(feats2)
+    feats2 = feats2 / scales
     residual = (y_mid - q_oof).rename("stage1_residual")
     ok = feats2.dropna().index.intersection(residual.dropna().index)
     stage2 = Stage2Model(lam=lam_stage2)
@@ -139,4 +164,6 @@ def fit_stage2_stacked(
         feat_clean.loc[y_clean.index], y_clean, constraints
     )
 
-    return StackedFit(stage1=stage1, stage2=stage2, pgi_residualiser=resid)
+    return StackedFit(
+        stage1=stage1, stage2=stage2, pgi_residualiser=resid, stage2_scales=scales
+    )
