@@ -122,6 +122,27 @@ rising to ~75% power at ~1,100 OOS days and ~95% at ~1,600. That is the
 price of a near-zero false-positive rate under 17 registered trials, and
 the remedy is accumulation, never looser criteria.
 
+## Amendment constants: provenance notes
+
+Recorded per amendment section 2.10.
+
+- `id_kappa_threshold = 10` replaces the conventional κ = 30 because the
+  conventional value is calibrated for wide designs. With three
+  standardised columns, the condition number from one correlated pair is
+  κ ≈ (1+ρ)/(1−ρ): reaching κ = 30 requires ρ ≈ 0.94, while ridge sign
+  instability begins near ρ ≈ 0.8, i.e. κ ≈ 9. A κ = 30 alarm could
+  never fire before the damage it exists to detect had already occurred;
+  κ = 10 fires at the onset. This arithmetic is regression-tested in
+  `tests/test_identification.py::test_kappa_arithmetic`.
+- `beta_screen_threshold = 0.90`, `id_persistence_rate = 0.30`, and
+  `id_min_alarms = 3` are conventional values, not derived ones. Their
+  value comes from prespecification — being frozen before any data is
+  seen — not from any claim of optimality.
+- The Monte Carlo results in this document predate the amendment and
+  were produced with the raw 17-trial count throughout; the amendment
+  adds `imbalance=I1beta` to the predictive floor (18) and the N_eff
+  machinery, neither of which alters any number above.
+
 Mapped onto the real programme's calendar: the options-era sample grows
 by ~250 ordinary days per year from the May 2022 split, so if the true
 effect sizes are in this range, coefficient-level evidence (β₂ sign, λ

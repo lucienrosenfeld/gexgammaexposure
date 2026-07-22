@@ -15,9 +15,13 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 from scipy import stats
+
+from espa.config import DEFAULT_CONSTANTS, SpecConstants
 
 
 def sharpe_tstat(pnl: pd.Series) -> tuple[float, float]:
@@ -46,10 +50,135 @@ def expected_max_sharpe(n_trials: int, var_sharpe: float) -> float:
     )
 
 
+@dataclass(frozen=True)
+class NeffResult:
+    """R-NEFF-01 output. ``fallback=True`` means the plain count controls.
+
+    Recorded known weaknesses of the estimator (documented, not
+    corrected): (a) zero-filling depresses correlations between
+    strategies with differing trade dates, biasing N_eff toward the raw
+    count — conservative; must never be 'corrected' via pairwise-overlap
+    or trade-only correlations; (b) the 80%/80% stability windows share
+    60% of observations, overstating stability — tolerable only because
+    the check's failure mode defaults to the conservative estimator;
+    (c) the participation ratio measures effective *dimensionality* of
+    the return covariance, not the effective trial count of a
+    max-statistic over correlated tests, and understates the latter at
+    moderate correlation — a valid participation ratio is therefore a
+    lower bound on effective trials, not the correct value, which is one
+    reason the raw count is always computed and logged alongside it.
+    """
+
+    n_eff: float
+    fallback: bool
+    reason: str
+    raw_count: int
+    participation_ratio: float | None = None
+    m_run: int = 0
+    m_unrun: int = 0
+    n_zero_variance: int = 0
+    n_common: int = 0
+    neff_first_window: float | None = None
+    neff_last_window: float | None = None
+    stability_divergence: float | None = None
+
+    def effective(self) -> float:
+        return float(self.raw_count) if self.fallback else self.n_eff
+
+
+def _participation_ratio(returns: pd.DataFrame) -> float:
+    corr = np.corrcoef(returns.to_numpy(), rowvar=False)
+    corr = np.atleast_2d(corr)
+    eig = np.linalg.eigvalsh(corr)
+    return float(eig.sum() ** 2 / (eig**2).sum())
+
+
+def effective_trials(
+    returns_by_config: pd.DataFrame,
+    m_unrun: int,
+    raw_count: int,
+    constants: SpecConstants = DEFAULT_CONSTANTS,
+) -> NeffResult:
+    """R-NEFF-01: participation-ratio effective trial count with hard
+    validity conditions, falling back to the raw (Harvey-Liu) count.
+
+    ``returns_by_config``: daily OOS net returns, days x executed
+    configurations, with explicit 0.0 on eligible-flat days and NaN only
+    on genuinely ineligible days. The common intersection is the rows on
+    which every executed configuration is eligible. Trade-only
+    correlation matrices are prohibited by construction — the input
+    contract is zero-filled eligible days, asserted below.
+
+    Executed configurations with zero variance over the common
+    intersection (all-flat, expected under flat-is-admissible) are
+    removed from the matrix and each counted as one fully independent
+    trial, mirroring the unrun treatment.
+    """
+    common = returns_by_config.dropna(axis=0, how="any")
+    n_common = len(common)
+    assert not common.isna().any().any()  # input contract
+
+    variances = common.var(axis=0)
+    zero_var = variances[variances <= 0].index
+    n_zero = len(zero_var)
+    live = common.drop(columns=zero_var)
+    m_run = live.shape[1]
+
+    def _fallback(reason: str) -> NeffResult:
+        return NeffResult(
+            n_eff=float(raw_count), fallback=True, reason=reason,
+            raw_count=raw_count, m_run=m_run, m_unrun=m_unrun,
+            n_zero_variance=n_zero, n_common=n_common,
+        )
+
+    if m_run < 2:
+        return _fallback("fewer than two executed configurations with variance")
+    if n_common < constants.neff_min_common_days:
+        return _fallback(
+            f"common intersection {n_common} < {constants.neff_min_common_days}"
+        )
+    if n_common < constants.neff_obs_per_config * m_run:
+        return _fallback(
+            f"common observations {n_common} < {constants.neff_obs_per_config} x "
+            f"{m_run} configurations"
+        )
+    corr = np.corrcoef(live.to_numpy(), rowvar=False)
+    eig = np.linalg.eigvalsh(np.atleast_2d(corr))
+    if eig.min() < -1e-8:
+        return _fallback("correlation matrix not PSD up to numerical error")
+
+    pr_full = _participation_ratio(live)
+    k = int(np.floor(constants.neff_stability_frac * n_common))
+    pr_first = _participation_ratio(live.iloc[:k])
+    pr_last = _participation_ratio(live.iloc[-k:])
+    div = max(abs(pr_first - pr_full), abs(pr_last - pr_full)) / pr_full
+    if div > constants.neff_stability_tol:
+        return _fallback(
+            f"stability check failed: divergence {div:.3f} > "
+            f"{constants.neff_stability_tol}"
+        )
+
+    return NeffResult(
+        n_eff=pr_full + m_unrun + n_zero,
+        fallback=False,
+        reason="valid",
+        raw_count=raw_count,
+        participation_ratio=pr_full,
+        m_run=m_run,
+        m_unrun=m_unrun,
+        n_zero_variance=n_zero,
+        n_common=n_common,
+        neff_first_window=pr_first,
+        neff_last_window=pr_last,
+        stability_divergence=div,
+    )
+
+
 def deflated_sharpe_ratio(
     pnl: pd.Series,
     n_trials: int,
     var_trial_sharpe: float | None = None,
+    neff: NeffResult | None = None,
 ) -> tuple[float, float]:
     """(DSR probability, benchmark SR0) for the executable P&L series.
 
@@ -58,7 +187,15 @@ def deflated_sharpe_ratio(
     variance of Sharpe estimates; defaults to the estimator variance of
     this series' Sharpe, a conservative stand-in when the registry does
     not yet hold per-trial Sharpes.
+
+    ``neff``: optional R-NEFF-01 result. When supplied and not flagged
+    fallback, its effective count replaces ``n_trials``. Callers must
+    always compute and log the raw-count result alongside — the
+    correction may change the headline, never hide the conservative
+    number.
     """
+    if neff is not None and not neff.fallback:
+        n_trials = max(1, int(round(neff.effective())))
     x = pnl.dropna()
     x = x[x != 0.0]
     n = len(x)
@@ -75,14 +212,23 @@ def deflated_sharpe_ratio(
     return float(stats.norm.cdf(z)), float(sr0)
 
 
-def harvey_liu_haircut(sharpe: float, n_obs: int, n_trials: int) -> float:
+def harvey_liu_haircut(
+    sharpe: float, n_obs: int, n_trials: int, neff: NeffResult | None = None
+) -> float:
     """Haircut Sharpe via Bonferroni-adjusted p-value (Harvey & Liu 2015).
 
     p_adj = min(1, n_trials * p); the haircut Sharpe is the one whose
     single-test p-value equals p_adj. Bonferroni is the most conservative
     of the three adjustments in the paper, which is the correct default
     when the true correlation structure across trials is unknown.
+
+    ``neff`` follows the same contract as in
+    :func:`deflated_sharpe_ratio`: a valid R-NEFF-01 result replaces
+    ``n_trials``; the raw-count haircut must still be computed and
+    logged by the caller.
     """
+    if neff is not None and not neff.fallback:
+        n_trials = max(1, int(round(neff.effective())))
     if not np.isfinite(sharpe) or n_obs < 10:
         return np.nan
     t = sharpe * np.sqrt(n_obs)
@@ -122,7 +268,12 @@ def block_bootstrap_sharpe_ci(
     return float(lo), float(hi)
 
 
-def sign_stability(coef_by_fold: pd.DataFrame, tol: float = 1e-10) -> pd.Series:
+def sign_stability(
+    coef_by_fold: pd.DataFrame,
+    tol: float = 1e-10,
+    coef_se_by_fold: pd.DataFrame | None = None,
+    materiality_mult: float = 1.0,
+) -> pd.Series:
     """Fraction of adjacent-fold pairs on which each coefficient keeps its sign.
 
     ``coef_by_fold``: rows = folds (chronological), columns = features.
@@ -130,14 +281,39 @@ def sign_stability(coef_by_fold: pd.DataFrame, tol: float = 1e-10) -> pd.Series:
     response to a weak feature, not an instability. A feature scoring
     below 1.0 flipped sign between at least one adjacent pair and is
     removed regardless of aggregate performance (Section 22).
+
+    Materiality floor (research-round amendment): when
+    ``coef_se_by_fold`` is supplied, a fold pair contributes to the
+    instability count only if |coef| > materiality_mult x SE on *both*
+    sides of the flip. This is the D-STAGE2-ID-01 floor, and — per the
+    amendment's resolved tension — it also governs the *removal* rule
+    for Stage 2 features, whose honest prior is a coefficient near zero
+    that flips sign as pure noise. Default behaviour (no SEs supplied)
+    is unchanged, so the Stage 1 removal rule, whose constrained
+    coefficients shrink to exact zeros, is not silently weakened.
     """
     out = {}
     for col in coef_by_fold.columns:
         v = coef_by_fold[col].to_numpy()
+        se = (
+            coef_se_by_fold[col].to_numpy()
+            if coef_se_by_fold is not None and col in coef_se_by_fold.columns
+            else None
+        )
         pairs = stable = 0
-        for a, b in zip(v[:-1], v[1:]):
+        for i, (a, b) in enumerate(zip(v[:-1], v[1:])):
             if abs(a) <= tol or abs(b) <= tol:
                 continue
+            if se is not None:
+                sa, sb = se[i], se[i + 1]
+                material = (
+                    np.isfinite(sa)
+                    and np.isfinite(sb)
+                    and abs(a) > materiality_mult * sa
+                    and abs(b) > materiality_mult * sb
+                )
+                if not material:
+                    continue  # immaterial flip: neither counted nor stable
             pairs += 1
             stable += int(np.sign(a) == np.sign(b))
         out[col] = stable / pairs if pairs else 1.0

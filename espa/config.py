@@ -94,6 +94,32 @@ class SpecConstants:
     # --- Stage 1 refit cadence ---
     refit_frequency_days: int = 63  # quarterly
 
+    # --- R-IMB-BETA-01 (research-round amendment; all values frozen) ---
+    beta_lookback_days: int = 252
+    beta_min_obs: int = 120
+    beta_shrinkage: float = 0.5            # toward beta = 1
+    beta_clip: tuple[float, float] = (0.25, 2.5)
+    beta_fallback: float = 1.0
+    beta_screen_threshold: float = 0.90    # |rho| above => redundant, pre-outcome
+    beta_screen_min_days: int = 250        # below => screen deferred, not decided
+
+    # --- R-NEFF-01 ---
+    neff_min_common_days: int = 500
+    neff_obs_per_config: int = 10          # T_common >= 10 * m_run
+    neff_stability_frac: float = 0.80      # first/last 80% windows
+    neff_stability_tol: float = 0.25       # relative divergence allowed
+
+    # --- D-STAGE2-ID-01 ---
+    id_kappa_threshold: float = 10.0
+    id_persistence_rate: float = 0.30
+    id_min_alarms: int = 3
+    id_materiality_se_mult: float = 1.0    # |coef| must exceed 1.0 x fold SE on both sides
+    #: Frozen fold-level SE method for Stage 2 (Section 2.7 of the
+    #: amendment): stationary block bootstrap on the training fold,
+    #: identical across folds. Fixed before Phase 1.
+    id_bootstrap_resamples: int = 200
+    id_bootstrap_mean_block: int = 10
+
 
 DEFAULT_CONSTANTS = SpecConstants()
 
@@ -120,7 +146,12 @@ class RunConfig:
 
     name: str
     rho: float = 0.0
-    imbalance_spec: str = "I1"  # "I1" -> [I_55, dI]; "I2" -> [I_last, I_last - I_55]
+    #: "I1" -> [I_55, dI]; "I2" -> [I_last, I_last - I_55];
+    #: "I1beta" -> beta-weighted aggregation under the I1 snapshot
+    #: structure (R-IMB-BETA-01) — a counted *replacement* for the
+    #: cap-weighted aggregation, admissible only after the redundancy
+    #: screen has recorded an ADMIT.
+    imbalance_spec: str = "I1"
     cross_asset_variant: str = "fixed"  # "fixed" | "no_ty" | "pca"
     lambda_s: float = DEFAULT_CONSTANTS.lambda_s
     lambda_t: float = DEFAULT_CONSTANTS.lambda_t

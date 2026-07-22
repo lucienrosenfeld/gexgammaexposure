@@ -26,6 +26,7 @@ from espa.models.stage2 import fit_stage2_stacked
 from espa.models.uncertainty import ForecastUncertainty
 from espa.targets import executable_pnl
 from espa.trade.threshold import select_threshold
+from espa.validation.identification import IdentificationTracker, fold_identification
 from espa.validation.metrics import (
     block_bootstrap_sharpe_ci,
     deflated_sharpe_ratio,
@@ -67,6 +68,17 @@ class BacktestResult:
     stage2_coef_by_fold: pd.DataFrame
     summary: dict
     event_day_log: pd.DataFrame
+    #: D-STAGE2-ID-01 measurement records (log-only infrastructure).
+    identification: IdentificationTracker = None
+    #: Fold-level Stage 2 bootstrap SEs (amendment section 2.7).
+    stage2_se_by_fold: pd.DataFrame = None
+
+    def oos_returns(self) -> pd.Series:
+        """Daily OOS net returns under the R-NEFF-01 input contract:
+        explicit 0.0 on eligible-flat days, NaN on genuinely ineligible
+        days (threshold-warmup blocks; event days are absent entirely).
+        """
+        return self.daily["pnl"].where(self.daily["eligible"])
 
     def __repr__(self) -> str:
         keys = ("n_trades", "sharpe_full", "tstat_full", "dsr_full", "haircut_sharpe_full")
@@ -97,10 +109,12 @@ def run_backtest(
 
     blender = LiveBlender(constants=constants)
     uncertainty = ForecastUncertainty()
+    id_tracker = IdentificationTracker(constants=constants)
 
     rows: list[dict] = []
     coef_rows: list[pd.Series] = []
     s2_coef_rows: list[pd.Series] = []
+    s2_se_rows: list[pd.Series] = []
     event_rows: list[dict] = []
 
     for fold in folds:
@@ -120,7 +134,14 @@ def run_backtest(
         )
         coef_rows.append(fit.stage1.coef.rename(fold.fold))
         s2_coef_rows.append(fit.stage2.coef.rename(fold.fold))
+        s2_se_rows.append(fit.stage2_se.rename(fold.fold))
         uncertainty.record(fit.stage1.coef.to_numpy())
+        if fit.stage2_design is not None:
+            id_tracker.add(
+                fold_identification(
+                    fold.fold, fit.stage2_design, fit.stage2.coef, fit.stage2_se
+                )
+            )
 
         # Event days falling inside this fold's date range: scored by the
         # frozen model, logged, never selected on.
@@ -186,14 +207,33 @@ def run_backtest(
     # removed regardless of aggregate performance. The engine reports;
     # the researcher reruns without the feature (a new registry entry).
     summary["unstable_features"] = list(stability.index[stability < 1.0])
+    # Stage 2 removal rule uses the materiality floor (amendment,
+    # resolved tension): a near-zero coefficient flipping sign is the
+    # honest-prior outcome, not an instability.
+    stage2_coef_by_fold = pd.DataFrame(s2_coef_rows)
+    stage2_se_by_fold = pd.DataFrame(s2_se_rows)
+    if len(stage2_coef_by_fold) > 1:
+        s2_stability = sign_stability(
+            stage2_coef_by_fold,
+            coef_se_by_fold=stage2_se_by_fold,
+            materiality_mult=constants.id_materiality_se_mult,
+        )
+        summary["stage2_sign_stability"] = s2_stability.to_dict()
+        summary["stage2_unstable_features"] = list(
+            s2_stability.index[s2_stability < 1.0]
+        )
+    summary["identification_alarms"] = id_tracker.alarms()
+    summary["identification_persistent"] = id_tracker.persistent()
     registry.log(config, result={k: summary[k] for k in ("n_trades", "sharpe_full", "tstat_full")})
 
     return BacktestResult(
         daily=daily,
         coef_by_fold=coef_by_fold,
-        stage2_coef_by_fold=pd.DataFrame(s2_coef_rows),
+        stage2_coef_by_fold=stage2_coef_by_fold,
         summary=summary,
         event_day_log=event_log,
+        identification=id_tracker,
+        stage2_se_by_fold=stage2_se_by_fold,
     )
 
 
@@ -234,6 +274,10 @@ def _apply_threshold_sequentially(
     daily = daily.copy()
     daily["z_theta"] = np.nan
     daily["direction"] = 0.0
+    # R-NEFF-01 input contract (amendment section 2.8): a day is eligible
+    # once a threshold selection existed for its block (including the
+    # flat selection z_theta = +inf). Warmup blocks are ineligible — a
+    # 0.0 there would be a fabricated observation, not a flat decision.
     days = daily.index
     step = constants.refit_frequency_days
     for start in range(0, len(days), step):
@@ -256,6 +300,7 @@ def _apply_threshold_sequentially(
         daily.loc[block, "z_theta"] = res.z_theta
         traded = daily.loc[block, "forecast_z"] > res.z_theta
         daily.loc[block, "direction"] = np.sign(daily.loc[block, "y_hat"]).where(traded, 0.0)
+    daily["eligible"] = daily["z_theta"].notna()
     daily["pnl"] = executable_pnl(daily["direction"], targets.reindex(daily.index))
     # Stage-1-only fallback, tracked in parallel: the bar Stage 2 must beat.
     daily["direction_q"] = np.sign(daily["Q_hat"]).where(daily["direction"] != 0.0, 0.0)

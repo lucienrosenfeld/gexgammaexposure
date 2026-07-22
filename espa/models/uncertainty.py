@@ -4,6 +4,13 @@ The live trigger is |yhat| / sigma_yhat > z_theta, with sigma_yhat
 propagated from the dispersion of coefficient estimates across refits
 through today's feature vector. This prevents identical raw predictions
 from being treated equally when model uncertainty differs across refits.
+
+Do not conflate this cross-refit dispersion with the fold-level
+bootstrap SEs of espa.models.stage2.bootstrap_coef_se: this class
+measures across-refit model drift and serves the trade trigger; the
+fold SEs measure within-fold sampling noise and serve the
+D-STAGE2-ID-01 materiality floor. They are different quantities with
+different consumers (amendment section 2.7).
 """
 
 from __future__ import annotations

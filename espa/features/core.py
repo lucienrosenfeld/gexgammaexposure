@@ -85,6 +85,10 @@ class Stage1Inputs:
     i_last: pd.Series | None = None
     #: Counted alternative: full-day 9:30 -> 15:30 return.
     r_full_day: pd.Series | None = None
+    #: Spec I1beta only (R-IMB-BETA-01): beta-weighted aggregations of the
+    #: same snapshot panels, produced by espa.features.imbalance_beta.
+    i_beta_55: pd.Series | None = None
+    i_beta_50: pd.Series | None = None
 
 
 def build_stage1_features(
@@ -92,6 +96,7 @@ def build_stage1_features(
     config: RunConfig,
     constants: SpecConstants = DEFAULT_CONSTANTS,
     displace: dict[str, str] = None,
+    i1beta_admitted: bool = False,
 ) -> tuple[pd.DataFrame, dict[str, int]]:
     """Assemble the seven Stage 1 features and their sign constraints.
 
@@ -101,6 +106,11 @@ def build_stage1_features(
     ``displace`` maps an added counted feature to the existing feature it
     replaces (e.g. ``{"absorption": "V"}``); adding without displacing
     violates the parameter budget and raises.
+
+    ``i1beta_admitted``: attestation that the registry holds an ADMIT
+    record for R-IMB-BETA-01 (redundancy screen passed). Running spec
+    I1beta without it is impossible, not merely discouraged — pass
+    ``registry.is_admitted("imbalance=I1beta")`` here.
     """
     displace = displace or {}
     z = lambda s: robust_z(s, constants)  # noqa: E731
@@ -117,6 +127,17 @@ def build_stage1_features(
             raise ValueError("imbalance spec I2 requires the receipt-stamped i_last series")
         cols["I_level"] = z(inputs.i_last)
         cols["I_change"] = z(inputs.i_last - inputs.i_55)
+    elif config.imbalance_spec == "I1beta":
+        if not i1beta_admitted:
+            raise ValueError(
+                "imbalance spec I1beta requires a recorded ADMIT from the "
+                "R-IMB-BETA-01 redundancy screen (pass i1beta_admitted="
+                "registry.is_admitted('imbalance=I1beta'))"
+            )
+        if inputs.i_beta_55 is None or inputs.i_beta_50 is None:
+            raise ValueError("imbalance spec I1beta requires i_beta_55 and i_beta_50")
+        cols["I_level"] = z(inputs.i_beta_55)
+        cols["I_change"] = z(inputs.i_beta_55 - inputs.i_beta_50)
     else:
         raise ValueError(f"unknown imbalance spec: {config.imbalance_spec}")
 

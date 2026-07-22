@@ -23,11 +23,54 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from espa.config import DEFAULT_CONSTANTS, SpecConstants
 from espa.features.pgi import PGIResidualiser, residualise_pgi
 from espa.models.constrained_ridge import ConstrainedRidge
 from espa.models.stage1 import Stage1Model, out_of_fold_predictions
 
 STAGE2_FEATURES = ("A_x_Qhat", "PGI_perp", "P")
+
+
+def bootstrap_coef_se(
+    features: pd.DataFrame,
+    residual: pd.Series,
+    lam: float,
+    constants: SpecConstants = DEFAULT_CONSTANTS,
+    seed: int = 17,
+) -> pd.Series:
+    """Fold-level coefficient SEs via stationary block bootstrap (frozen).
+
+    This is the SE method fixed before Phase 1 per amendment section 2.7:
+    stationary block bootstrap (Politis-Romano, mean block
+    ``id_bootstrap_mean_block``) over the training fold's (X, y) rows,
+    ``id_bootstrap_resamples`` refits, identical across folds. These SEs
+    serve the D-STAGE2-ID-01 materiality floor and the Stage 2 removal
+    rule. They must NOT be conflated with ForecastUncertainty's
+    cross-refit dispersion, which serves the trade trigger — the two
+    measure different things (within-fold sampling noise versus
+    across-refit model drift).
+    """
+    X = features.to_numpy(dtype=float)
+    y = residual.reindex(features.index).to_numpy(dtype=float)
+    n = len(y)
+    rng = np.random.default_rng(seed)
+    p_new = 1.0 / constants.id_bootstrap_mean_block
+    coefs = []
+    for _ in range(constants.id_bootstrap_resamples):
+        idx = np.empty(n, dtype=int)
+        idx[0] = rng.integers(n)
+        for t in range(1, n):
+            idx[t] = rng.integers(n) if rng.random() < p_new else (idx[t - 1] + 1) % n
+        try:
+            m = ConstrainedRidge(lam=lam, fit_intercept=False).fit(
+                X[idx], y[idx], [0] * X.shape[1]
+            )
+            coefs.append(m.coef_)
+        except ValueError:
+            continue
+    if len(coefs) < 10:
+        return pd.Series(np.nan, index=features.columns)
+    return pd.Series(np.std(np.vstack(coefs), axis=0, ddof=1), index=features.columns)
 
 
 @dataclass
@@ -98,6 +141,14 @@ class StackedFit:
     stage2: Stage2Model
     pgi_residualiser: PGIResidualiser
     stage2_scales: pd.Series
+    #: Fold-level Stage 2 coefficient SEs (frozen bootstrap, section 2.7)
+    #: for the D-STAGE2-ID-01 materiality floor. NaN when Stage 2 was not
+    #: estimable on this window.
+    stage2_se: pd.Series = None
+    #: The exact standardised training design used in Stage 2 estimation,
+    #: exposed for fold_identification. None when Stage 2 was not
+    #: estimable.
+    stage2_design: pd.DataFrame = None
 
     def forecast(
         self,
@@ -151,8 +202,12 @@ def fit_stage2_stacked(
     residual = (y_mid - q_oof).rename("stage1_residual")
     ok = feats2.dropna().index.intersection(residual.dropna().index)
     stage2 = Stage2Model(lam=lam_stage2)
+    stage2_se = pd.Series(np.nan, index=list(STAGE2_FEATURES))
+    stage2_design = None
     if len(ok) >= 10:
         stage2.fit(feats2.loc[ok], residual.loc[ok])
+        stage2_design = feats2.loc[ok]
+        stage2_se = bootstrap_coef_se(feats2.loc[ok], residual.loc[ok], lam_stage2)
     else:  # not enough options-era data: options block contributes nothing
         stage2.model.coef_ = np.zeros(3)
         stage2.model.feature_names_ = list(STAGE2_FEATURES)
@@ -165,5 +220,6 @@ def fit_stage2_stacked(
     )
 
     return StackedFit(
-        stage1=stage1, stage2=stage2, pgi_residualiser=resid, stage2_scales=scales
+        stage1=stage1, stage2=stage2, pgi_residualiser=resid, stage2_scales=scales,
+        stage2_se=stage2_se, stage2_design=stage2_design,
     )
